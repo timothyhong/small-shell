@@ -23,12 +23,16 @@ Program Description: This program is an implementation of a simple shell capable
 #define VAR_EXP_CHAR "$$"
 #define MAX_LENGTH 2048
 #define MAX_ARGS 512
+#define EXIT_CMD "exit"
+#define CD_CMD "cd"
+#define STATUS_CMD "status"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <time.h>
 #include <fcntl.h>
@@ -56,86 +60,108 @@ command_t* createCommand(char* line) {
 
 	char* savePtr = NULL;
 
-	int commandFound = 0;
-	int argsFound = 0;
 	int inputFound = 0;
 	int outputFound = 0;
-	int backgroundFound = 0;
 
-	// first token is the command or a comment
+	// first token is the command
 	char* token = strtok_r(line, " ", &savePtr);
+
+	// get pid
+	char* pid = malloc(21);
+	sprintf(pid, "%d", getpid());
+
+	// perform variable expansion on $$
+	currCommand->command = expandCommand(token, VAR_EXP_CHAR, pid);
+
+	token = strtok_r(NULL, " ", &savePtr);
+
+	// look for args
+	int numArgs = 0;
+
+	// use a copy of the string to parse through args to get numArgs
+	char* tempPtr = NULL;
+	char* tempToken = strtok_r(lineCpy, " ", &tempPtr);
+	tempToken = strtok_r(NULL, " ", &tempPtr); // advance it once to skip command
+	while (tempToken != NULL && strcmp(tempToken, INPUT_CHAR) != 0 
+		&& strcmp(tempToken, OUTPUT_CHAR) != 0 
+		&& strcmp(tempToken, BACKGROUND_CHAR) != 0) {
+		numArgs++;
+		tempToken = strtok_r(NULL, " ", &tempPtr);
+	}
+	currCommand->numArgs = numArgs;
+
+	// store args
+	currCommand->args = malloc(sizeof(char*) * numArgs); // allocate space for numArgs char ptrs
+	for (int i = 0; i < numArgs; i++) {
+		currCommand->args[i] = expandCommand(token, VAR_EXP_CHAR, pid);
+		token = strtok_r(NULL, " ", &savePtr);
+	}
+
 	while (token != NULL) {
-		if (!commandFound) {
-			// perform variable expansion on $$
-			char* pid = malloc(21);
-			sprintf(pid, "%d", getpid());
-			currCommand->command = expandCommand(token, VAR_EXP_CHAR, pid);
-			free(pid);
-			commandFound = 1;
+		// input redirection filename
+		if (strcmp(token, INPUT_CHAR) == 0 && !inputFound) {
+			// next token will be input filename
+			token = strtok_r(NULL, " ", &savePtr);
+			if (token) {
+				currCommand->inputFile = expandCommand(token, VAR_EXP_CHAR, pid);
+				inputFound = 1;
+			}
 		}
-		else if (!argsFound) {
-			// get numArgs
-			int numArgs = 0;
-
-			// use a copy of the string to parse through args to get numArgs
-			char* tempPtr = NULL;
-			char* tempToken = strtok_r(lineCpy, " ", &tempPtr);
-			tempToken = strtok_r(NULL, " ", &tempPtr); // advance it once to skip command
-			while (tempToken != NULL && strcmp(tempToken, INPUT_CHAR) != 0 
-				&& strcmp(tempToken, OUTPUT_CHAR) != 0 
-				&& strcmp(tempToken, BACKGROUND_CHAR) != 0) {
-				numArgs++;
-				tempToken = strtok_r(NULL, " ", &tempPtr);
+		// output redirection filename
+		else if (strcmp(token, OUTPUT_CHAR) == 0 && !outputFound) {
+			// next token will be output filename
+			token = strtok_r(NULL, " ", &savePtr);
+			if (token) {
+				currCommand->outputFile = expandCommand(token, VAR_EXP_CHAR, pid);
+				outputFound = 1;
 			}
-			currCommand->numArgs = numArgs;
-
-			// store args
-			currCommand->args = malloc(sizeof(char*) * numArgs); // allocate space for numArgs char ptrs
-			for (int i = 0; i < numArgs; i++) {
-				currCommand->args[i] = token;
-				token = strtok_r(NULL, " ", &savePtr);
+		}
+		else if (strcmp(token, BACKGROUND_CHAR) == 0) {
+			token = strtok_r(NULL, " ", &savePtr);
+			if (token == NULL) {
+				// valid background char
+				currCommand->isBackground = 1;
+				break;
 			}
-			argsFound = 1;
+			else {
+				continue;
+			}
 		}
 		token = strtok_r(NULL, " ", &savePtr);
 	}
 
-	// NULL token -> exit
-	if (!commandFound) {
-		free(currCommand);
-		free(lineCpy);
-		return NULL;
-	}
 	free(lineCpy);
+	free(pid);
 	return currCommand;
 }
 
 /*
  * Function: expandCommand
  * ----------------------------
- *   Takes a command string and expands out the VAR_EXP_CHAR into smallsh's PID.
+ *   Takes a string and replaces all instances of a given input substring with a given output substring.
+ *   Replacement occurs left to right.
  *
- *	 commandStr: the command string to expand
- *   expStrFrom: the variable string to expand from
- *   expStrTo: the variable string to expand to
+ *	 str: the string to expand
+ *   fromSubstr: the input substring to expand
+ *   toSubstr: the output substring to expand to
  *
  *   returns: a pointer to the expanded string
  * 
  *	 notes: must free returned string
  */
 
-char* expandCommand(char* commandStr, char* expStrFrom, char* expStrTo) {
+char* expandCommand(char* str, char* fromSubstr, char* toSubstr) {
 	// count variable strings to expand from
 	int i = 0;
-	int newLength = strlen(commandStr);
-	int adjustedLength = strlen(expStrTo) - strlen(expStrFrom);
+	int newLength = strlen(str);
+	int adjustedLength = strlen(toSubstr) - strlen(fromSubstr);
 	
 	// figure out how much space to allocate for expanded string
-	while (i < strlen(commandStr)) {
+	while (i < strlen(str)) {
 		// if match, allot room for expansion
-		if (strncmp(&commandStr[i], expStrFrom, strlen(expStrFrom)) == 0) {
+		if (strncmp(&str[i], fromSubstr, strlen(fromSubstr)) == 0) {
 			newLength += adjustedLength;
-			i += strlen(expStrFrom);
+			i += strlen(fromSubstr);
 		}
 		// doesn't match
 		else {
@@ -149,14 +175,14 @@ char* expandCommand(char* commandStr, char* expStrFrom, char* expStrTo) {
 	memset(expandedStr, '\0', newLength + 1);
 
 	// now copy the expanded string
-	while (i < strlen(commandStr)) {
-		if (strncmp(&commandStr[i], expStrFrom, strlen(expStrFrom)) == 0) {
-			strncat(expandedStr, expStrTo, strlen(expStrTo));
-			i += strlen(expStrFrom);
+	while (i < strlen(str)) {
+		if (strncmp(&str[i], fromSubstr, strlen(fromSubstr)) == 0) {
+			strncat(expandedStr, toSubstr, strlen(toSubstr));
+			i += strlen(fromSubstr);
 		}
 		// doesn't match
 		else {
-			strncat(expandedStr, &commandStr[i], 1);
+			strncat(expandedStr, &str[i], 1);
 			i++;
 		}
 	}
@@ -207,6 +233,120 @@ int isEmptyString(char* s) {
 		}
 	}
 	return 1;
+}
+
+/*
+ * Function: changeDirectory
+ * ----------------------------
+ *   Wrapper for the chdir() function. If command does not contain any args, changes to the
+ *   default HOME directory (i.e. getenv("HOME
+ *
+ *   command: a pointer to the command struct
+ *
+ *	 returns: 0 if successful; 1 if unsuccessful
+ */
+int changeDirectory(command_t* command) {
+	int retVal;
+	// double check command is CD_CMD
+	if (strcmp(command->command, CD_CMD) != 0) {
+		return -1;
+	}
+	// if no args, cd to HOME
+	if (command->numArgs == 0) {
+		retVal = chdir(getenv("HOME"));
+	}
+	// otherwise do whatever chdir normally does, ignoring other args besides first
+	else {
+		retVal = chdir(command->args[0]);
+	}
+	if (retVal != 0) {
+		perror("Error");
+	}
+	// for debugging
+	else {
+		size_t size = MAX_LENGTH;
+		char* cwd = malloc(size);
+		getcwd(cwd, size);
+		printf("CWD: %s\n", cwd);
+		free(cwd);
+	}
+	return retVal;
+}
+
+/*
+ * Function: printStatus
+ * ----------------------------
+ *   Prints the status of the last terminated/completed wstatus
+ *
+ *   wstatus: a pointer to the int value
+ */
+void printStatus(int* wstatus) {
+	// if nothing's been run yet
+	if (wstatus == NULL) {
+		printf("exit status 0\n");
+	}
+	// if exited successfully
+	else if (WIFEXITED(wstatus)) {
+		printf("exit status %d\n", WEXITSTATUS(wstatus));
+	}
+	// if signal termination
+	else if (WIFSIGNALED(wstatus)) {
+		printf("terminated by signal %d\n", WTERMSIG(wstatus));
+	}
+	else {
+		printf("unknown exit status\n");
+	}
+}
+
+/*
+ * Function: spawnChildAndExecute
+ * ----------------------------
+ *   Spawns a new child and executes the given command
+ *
+ *   command: a pointer to the command struct
+ *	 wstatus: a pointer to the int wstatus value
+ * 
+ *   returns: pointer to the int wstatus value
+ */
+int* spawnChildAndExecute(command_t* command, int* wstatus) {
+	// build newargv[] array, add a spot for the command and the terminating NULL pointer
+	char* newargv[command->numArgs + 2];
+
+	newargv[command->numArgs + 1] = NULL;
+	for (int i = 0; i < command->numArgs; i++) {
+		newargv[i + 1] = malloc(strlen(command->args[i]) * sizeof(char) + 1);
+		strcpy(newargv[i + 1], command->args[i]);
+	}
+
+	// Fork a new process
+	pid_t spawnPid = fork();
+
+	switch (spawnPid) {
+	case -1:
+		perror("fork()\n");
+		exit(1);
+		break;
+	case 0:
+		// child process
+		printf("CHILD(%d) running %s command\n", getpid(), command->command);
+		// Replace the current program with command->command
+		execvp(newargv[0], newargv);
+		// exec only returns if there is an error
+		perror(command->command);
+		exit(1);
+		break;
+	default:
+		// parent process
+		// free up newargv
+		for (int i = 0; i < command->numArgs + 1; i++) {
+			free(newargv[i]);
+		}
+		// wait for child
+		spawnPid = waitpid(spawnPid, wstatus, 0);
+		printf("PARENT(%d): child(%d) terminated.\n", getpid(), spawnPid);
+		break;
+	}
+	return wstatus;
 }
 
 /*
@@ -281,6 +421,9 @@ void destroyCommand(command_t* command) {
 		free(command->command);
 	}
 	if (command->args) {
+		for (int i = 0; i < command->numArgs; i++) {
+			free(command->args[i]);
+		}
 		free(command->args);
 	}
 	if (command->inputFile) {
@@ -301,6 +444,10 @@ void destroyCommand(command_t* command) {
  */
 int startShell(void) {
 	int exit = 0;
+
+	// track wstatus of last completed/terminated child process
+	int* wstatus = NULL;
+
 	while (!exit) {
 		char* buffPtr = NULL;
 		size_t size = 0;
@@ -309,8 +456,19 @@ int startShell(void) {
 		currLine = getCommand(&buffPtr, &size);
 		command_t* currCommand = createCommand(currLine);
 		printCommand(currCommand);
-		if (strcmp(currCommand->command, "exit") == 0) {
+		if (strcmp(currCommand->command, EXIT_CMD) == 0) {
+			// run process cleanup
 			exit = 1;
+		}
+		else if (strcmp(currCommand->command, CD_CMD) == 0) {
+			changeDirectory(currCommand);
+		}
+		else if (strcmp(currCommand->command, STATUS_CMD) == 0) {
+			printStatus(wstatus);
+		}
+		else {
+			// spawn child process and divert to exec()
+			wstatus = spawnChildAndExecute(currCommand, wstatus);
 		}
 		free(buffPtr);
 		destroyCommand(currCommand);
@@ -330,6 +488,7 @@ int main(int argc, char* argv[])
 		return EXIT_FAILURE;
 	}
 	startShell();
+	return EXIT_SUCCESS;
 }
 
 
