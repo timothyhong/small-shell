@@ -81,7 +81,7 @@ void handle_SIGTSTP(int signo) {
 }
 
 // Handler for SIGCHLD
-// Code adapted from Ryan Gambord at https://edstem.org/us/courses/16718/discussion/1077321
+// Code adapted from instructor Ryan Gambord at https://edstem.org/us/courses/16718/discussion/1077321
 void handle_SIGCHLD(int signo, siginfo_t* si, void* context) {
 	int errno_sav = errno;
 
@@ -700,7 +700,6 @@ int startShell(void) {
 				break;
 			case 0:
 				// child process
-				fflush(stdout);
 				// set SIGINT behavior if child process is foreground
 				if (!currCommand->isBackground || backgroundEnabled == false) {
 					SIGINT_action.sa_handler = SIG_DFL;
@@ -725,6 +724,12 @@ int startShell(void) {
 						perror("Error");
 						exit(1);
 					}
+
+					// close open file
+					if (close(inputFD) == -1) {
+						perror("Error");
+						exit(1);
+					}
 				}
 				// no input redirection specified, send to dev/null
 				else if (currCommand->isBackground && backgroundEnabled) {
@@ -737,6 +742,12 @@ int startShell(void) {
 					// Redirect stdin to source file
 					int result = dup2(inputFD, 0);
 					if (result == -1) {
+						perror("Error");
+						exit(1);
+					}
+
+					// close open file
+					if (close(inputFD) == -1) {
 						perror("Error");
 						exit(1);
 					}
@@ -755,6 +766,12 @@ int startShell(void) {
 						perror("Error");
 						exit(1);
 					}
+
+					// close open file
+					if (close(outputFD) == -1) {
+						perror("Error");
+						exit(1);
+					}
 				}
 				// no output redirection specified, send to dev/null
 				else if (currCommand->isBackground && backgroundEnabled) {
@@ -767,6 +784,12 @@ int startShell(void) {
 					// Redirect stdout to source file
 					int result = dup2(outputFD, 1);
 					if (result == -1) {
+						perror("Error");
+						exit(1);
+					}
+
+					// close open file
+					if (close(outputFD) == -1) {
 						perror("Error");
 						exit(1);
 					}
