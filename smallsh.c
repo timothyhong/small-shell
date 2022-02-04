@@ -21,12 +21,12 @@ Program Description: This program is an implementation of a simple shell capable
 #define OUTPUT_CHAR ">"
 #define COMMENT_CHAR "#"
 #define VAR_EXP_CHAR "$$"
-#define MAX_LENGTH 2048
-#define MAX_ARGS 512
+#define MAX_LENGTH 2048 // unused, dynamic allocation
+#define MAX_ARGS 512 // unused
 #define EXIT_CMD "exit"
 #define CD_CMD "cd"
 #define STATUS_CMD "status"
-#define MAX_PID_STR_SIZE 21
+#define MAX_PID_STR_SIZE 21 // max digits in PID is 21?
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,7 +44,8 @@ Program Description: This program is an implementation of a simple shell capable
 
 // global variable for signal handling
 bool backgroundEnabled = true;
-
+// track status of last completed/terminated child process
+int status;
 // global linked list to keep track of child processes
 llNode* head = NULL;
 
@@ -58,7 +59,8 @@ typedef struct command_t {
 	bool isBackground;
 } command_t;
 
-/* Linked list struct for tracking child processes */
+/* Linked list struct for tracking background child processes */
+// doubly linked list is unnecessary
 typedef struct llNode {
 	pid_t pid;
 	struct llNode* next;
@@ -77,7 +79,6 @@ void handle_SIGTSTP(int signo) {
 		backgroundEnabled = true;
 		write(STDOUT_FILENO, message, sizeof(message) - 1);
 	}
-	write(STDOUT_FILENO, PROMPT_CHAR, 1);
 }
 
 // Handler for SIGCHLD
@@ -85,14 +86,13 @@ void handle_SIGTSTP(int signo) {
 void handle_SIGCHLD(int signo, siginfo_t* si, void* context) {
 	int errno_sav = errno;
 
-	int status;
 	waitpid(si->si_pid, &status, 0);
 
 	pid_t pid = si->si_pid;
 	// check that pid exists in list of tracked background processes before printing
 	llNode* currNode = head;
 	while (currNode != NULL) {
-		// if node is a tracked background process, print
+		// if node is a tracked background process, print, otherwise ignore
 		if (currNode->pid == pid) {
 			char const str[] = "\nbackground pid ";
 			write(STDOUT_FILENO, str, sizeof str - 1);
@@ -139,10 +139,7 @@ void handle_SIGCHLD(int signo, siginfo_t* si, void* context) {
 			}
 
 			write(STDOUT_FILENO, "\n", 1);
-			write(STDOUT_FILENO, PROMPT_CHAR, 1);
 			errno = errno_sav;
-			// remove node
-			removeFromChildList(head, pid);
 		}
 		currNode = currNode->next;
 	}
@@ -483,13 +480,6 @@ int changeDirectory(command_t* command) {
 	if (retVal != 0) {
 		perror("Error");
 	}
-	// for debugging
-	else {
-		size_t size = MAX_LENGTH;
-		char* cwd = malloc(size);
-		getcwd(cwd, size);
-		free(cwd);
-	}
 	return retVal;
 }
 
@@ -617,9 +607,6 @@ void destroyCommand(command_t* command) {
 int startShell(void) {
 	bool exitBool = false;
 	bool statusInitialized = false;
-
-	// track status of last completed/terminated child process
-	int status;
 
 	// signal handling
 	struct sigaction SIGINT_action = { { 0 } }, SIGTSTP_action = { { 0 } }, SIGCHLD_action = { { 0 } };
